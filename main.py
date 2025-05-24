@@ -1,32 +1,76 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import pandas_ta as ta
-from numpy import nan as npNaN
+import requests
 
 app = FastAPI()
+
+# CORS liberado para qualquer frontend consumir
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class AnaliseRequest(BaseModel):
     symbol: str
     interval: str
 
+
 @app.get("/")
 def read_root():
-    return {"message": "API Criptoeasy rodando perfeitamente."}
+    return {"message": "API Criptoeasy funcionando com dados reais da Binance"}
+
 
 @app.post("/analisar")
 def analisar_dados(request: AnaliseRequest):
-    df = pd.DataFrame({
-        "close": [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
-    })
+    try:
+        # Puxando dados da Binance API
+        url = f"https://api.binance.com/api/v3/klines?symbol={request.symbol}&interval={request.interval}&limit=100"
+        response = requests.get(url)
 
-    df["rsi"] = ta.rsi(df["close"])
-    rsi = df["rsi"].iloc[-1]
+        if response.status_code != 200:
+            return {"error": "Erro ao buscar dados da Binance"}
 
-    tendencia = "Alta" if rsi > 50 else "Baixa"
+        data = response.json()
 
-    return {
-        "Tendência": tendencia,
-        "RSI": round(rsi, 2) if not pd.isna(rsi) else "Indisponível",
-        "Preço Simulado": df["close"].iloc[-1]
-    }
+        # Organizando os dados em dataframe
+        df = pd.DataFrame(data, columns=[
+            "Open time", "Open", "High", "Low", "Close", "Volume",
+            "Close time", "Quote asset volume", "Number of trades",
+            "Taker buy base asset volume", "Taker buy quote asset volume", "Ignore"
+        ])
+
+        df["Close"] = df["Close"].astype(float)
+
+        # Indicadores técnicos
+        df["RSI"] = ta.rsi(df["Close"])
+        df["EMA20"] = ta.ema(df["Close"], length=20)
+        df["EMA50"] = ta.ema(df["Close"], length=50)
+
+        rsi = round(df["RSI"].iloc[-1], 2) if not pd.isna(df["RSI"].iloc[-1]) else "Indisponível"
+        ema20 = round(df["EMA20"].iloc[-1], 2) if not pd.isna(df["EMA20"].iloc[-1]) else "Indisponível"
+        ema50 = round(df["EMA50"].iloc[-1], 2) if not pd.isna(df["EMA50"].iloc[-1]) else "Indisponível"
+        preco_atual = df["Close"].iloc[-1]
+
+        # Lógica de tendência
+        if ema20 > ema50:
+            tendencia = "Tendência de Alta"
+        elif ema20 < ema50:
+            tendencia = "Tendência de Baixa"
+        else:
+            tendencia = "Indefinida"
+
+        return {
+            "Tendência": tendencia,
+            "Preço Atual": preco_atual,
+            "RSI": rsi,
+            "EMA20": ema20,
+            "EMA50": ema50
+        }
+    except Exception as e:
+        return {"error": str(e)}
